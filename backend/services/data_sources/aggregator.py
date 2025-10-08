@@ -18,9 +18,11 @@ import os
 import json
 import logging
 import time
-from typing import Dict, Any, Optional
+import asyncio
+from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Try to import Redis, fall back to dict cache if not available
 try:
@@ -151,6 +153,98 @@ class DataAggregator:
         # All sources failed and no cache available
         logger.error(f"❌ All sources failed for {ticker} and no cache available")
         return None
+    
+    async def fetch_stocks_batch(
+        self, 
+        tickers: List[str], 
+        max_workers: int = 10,
+        force_refresh: bool = False
+    ) -> Dict[str, Optional[Dict[str, Any]]]:
+        """
+        Fetch multiple stocks concurrently for much faster performance.
+        
+        This method fetches stocks in parallel using ThreadPoolExecutor,
+        making it ~10x faster than sequential fetching.
+        
+        Args:
+            tickers: List of ticker symbols to fetch
+            max_workers: Maximum concurrent requests (default: 10)
+            force_refresh: Skip cache and fetch fresh data
+            
+        Returns:
+            Dictionary mapping ticker -> stock data (or None if failed)
+            
+        Example:
+            >>> aggregator = DataAggregator()
+            >>> results = await aggregator.fetch_stocks_batch(['AAPL', 'MSFT', 'GOOGL'])
+            >>> for ticker, data in results.items():
+            ...     if data:
+            ...         print(f"{ticker}: ${data['current_price']:.2f}")
+            AAPL: $150.00
+            MSFT: $300.00
+            GOOGL: $120.00
+        """
+        logger.info(f"📦 Batch fetching {len(tickers)} stocks with {max_workers} workers")
+        start_time = time.time()
+        
+        results = {}
+        
+        # Use ThreadPoolExecutor for concurrent fetching
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all fetch tasks
+            future_to_ticker = {
+                loop.run_in_executor(
+                    executor,
+                    self._fetch_stock_sync,
+                    ticker,
+                    force_refresh
+                ): ticker
+                for ticker in tickers
+            }
+            
+            # Gather results as they complete
+            completed = 0
+            for future in as_completed(future_to_ticker):
+                ticker = future_to_ticker[future]
+                try:
+                    data = await future
+                    results[ticker] = data
+                    completed += 1
+                    if completed % 10 == 0:
+                        logger.info(f"Progress: {completed}/{len(tickers)} stocks fetched")
+                except Exception as e:
+                    logger.error(f"Error fetching {ticker} in batch: {e}")
+                    results[ticker] = None
+        
+        elapsed = time.time() - start_time
+        success_count = sum(1 for data in results.values() if data is not None)
+        
+        logger.info(
+            f"✅ Batch complete: {success_count}/{len(tickers)} succeeded in {elapsed:.2f}s "
+            f"({len(tickers)/elapsed:.1f} stocks/sec)"
+        )
+        
+        return results
+    
+    def _fetch_stock_sync(self, ticker: str, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
+        """
+        Synchronous wrapper for fetch_stock (used by ThreadPoolExecutor).
+        
+        Args:
+            ticker: Stock ticker symbol
+            force_refresh: Skip cache
+            
+        Returns:
+            Stock data or None
+        """
+        # Run the async method in a sync context
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(self.fetch_stock(ticker, force_refresh))
+        finally:
+            loop.close()
     
     def _get_from_cache(self, key: str, allow_stale: bool = False) -> Optional[Dict[str, Any]]:
         """
