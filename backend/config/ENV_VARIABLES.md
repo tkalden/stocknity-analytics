@@ -13,8 +13,14 @@ SUPABASE_URL=https://your-project-id.supabase.co
 
 # Your Supabase anon/public key (safe for client-side use)
 # Find this in: Supabase Dashboard → Settings → API → Project API keys → anon/public
-# This key is used for both backend and frontend authentication
-SUPABASE_KEY=your-anon-key-here
+# This key is used for both backend and frontend
+# Backend uses anon key to respect RLS policies (safer, recommended)
+SUPABASE_ANON_KEY=your-anon-key-here
+
+# Optional: Supabase service_role key (BYPASSES RLS - use with caution!)
+# Only needed for admin operations that must bypass security policies
+# Find this in: Supabase Dashboard → Settings → API → Project API keys → service_role
+# SUPABASE_SERVICE_KEY=your-service-role-key-here
 ```
 
 ### Supabase Auth Configuration
@@ -99,24 +105,34 @@ from backend.config.supabase_client import get_user_by_email, create_portfolio
 user = await get_user_by_email("user@example.com")
 ```
 
-### Authentication Operations
-```python
-from backend.config.supabase_client import sign_up, sign_in, sign_out
+### Authentication Operations (Frontend Only)
+```typescript
+// Frontend handles all auth operations using Supabase JS SDK
+import { supabase } from './config/supabaseClient';
 
-# Sign up a new user (creates auth.users + public.users automatically)
-result = await sign_up(
-    email="user@stocknity.com",
-    password="secure_password",
-    user_data={'name': 'John Doe'}
-)
+// Sign up a new user (creates auth.users + public.users automatically via trigger)
+const { data, error } = await supabase.auth.signUp({
+  email: 'user@stocknity.com',
+  password: 'secure_password',
+  options: {
+    data: { name: 'John Doe' }
+  }
+});
 
-# Sign in
-session = await sign_in("user@stocknity.com", "secure_password")
-access_token = session['session']['access_token']
+// Sign in
+const { data: session } = await supabase.auth.signInWithPassword({
+  email: 'user@stocknity.com',
+  password: 'secure_password'
+});
 
-# Sign out
-await sign_out()
+// Sign out
+await supabase.auth.signOut();
 ```
+
+**Backend does NOT handle auth** - it only:
+1. Verifies JWT tokens from frontend requests
+2. Queries user data using `user_id` from verified JWT
+3. Respects RLS policies automatically
 
 ## Authentication Architecture
 

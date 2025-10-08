@@ -3,6 +3,9 @@ Supabase Client Configuration
 
 This module provides a singleton Supabase client and helper functions
 for database operations including user and portfolio management.
+
+NOTE: Authentication is handled ENTIRELY by the frontend using Supabase JS SDK.
+Backend only verifies JWT tokens and operates on user data.
 """
 
 import os
@@ -20,9 +23,11 @@ logger = logging.getLogger(__name__)
 
 # Supabase credentials from environment
 SUPABASE_URL = os.getenv('SUPABASE_URL')
-SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+SUPABASE_ANON_KEY = os.getenv('SUPABASE_ANON_KEY')  # Public key (safe for frontend + backend)
+SUPABASE_SERVICE_KEY = os.getenv('SUPABASE_SERVICE_KEY')  # Secret key (optional, only if needed)
 
 # Initialize supabase client as None (will be created on first use)
+# Backend uses ANON key by default (respects RLS, safer)
 supabase: Optional[Client] = None
 
 
@@ -30,8 +35,10 @@ def _get_supabase_client() -> Client:
     """
     Get or create the Supabase client (lazy initialization).
     
-    This allows the module to be imported even if environment variables
-    aren't set, which is useful for testing and development.
+    Backend uses ANON key by default which:
+    - Respects Row Level Security (RLS) policies
+    - Safe to use for user-scoped operations
+    - Same key as frontend uses
     
     Returns:
         Initialized Supabase client
@@ -45,16 +52,16 @@ def _get_supabase_client() -> Client:
         return supabase
     
     # Validate required environment variables
-    if not SUPABASE_URL or not SUPABASE_KEY:
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         raise ValueError(
-            "Missing required environment variables: SUPABASE_URL and SUPABASE_KEY must be set. "
+            "Missing required environment variables: SUPABASE_URL and SUPABASE_ANON_KEY must be set. "
             "See backend/config/ENV_VARIABLES.md for setup instructions."
         )
     
-    # Create singleton Supabase client
+    # Create singleton Supabase client using ANON key
     try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        logger.info("✅ Supabase client initialized successfully")
+        supabase = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+        logger.info("✅ Supabase client initialized with anon key (RLS enforced)")
         return supabase
     except Exception as e:
         logger.error(f"❌ Failed to initialize Supabase client: {e}")
@@ -63,7 +70,7 @@ def _get_supabase_client() -> Client:
 
 # Initialize client immediately if credentials are available
 # This maintains backwards compatibility for code that expects `supabase` to be initialized
-if SUPABASE_URL and SUPABASE_KEY:
+if SUPABASE_URL and SUPABASE_ANON_KEY:
     try:
         supabase = _get_supabase_client()
     except Exception as e:
@@ -142,26 +149,19 @@ async def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
 
 async def create_user(user_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Create a new user in the database.
+    Create a new user profile in public.users table.
+    
+    NOTE: This should rarely be called directly. User profiles are automatically
+    created via the handle_new_user() trigger when someone signs up via Supabase Auth.
     
     Args:
-        user_data: Dictionary containing user fields (email, name, password_hash, etc.)
+        user_data: Dictionary containing user fields (email, name, etc.)
         
     Returns:
         Created user dictionary with ID
         
     Raises:
         Exception: If user creation fails (e.g., duplicate email)
-        
-    Example:
-        >>> user_data = {
-        ...     'email': 'new@stocknity.com',
-        ...     'name': 'New User',
-        ...     'password_hash': 'hashed_password',
-        ...     'experience_level': 'beginner'
-        ... }
-        >>> new_user = await create_user(user_data)
-        >>> print(f"Created user with ID: {new_user['id']}")
     """
     try:
         response = supabase.table('users').insert(user_data).execute()
@@ -478,272 +478,26 @@ async def health_check() -> Dict[str, Any]:
 
 
 # ============================================================================
-# AUTHENTICATION OPERATIONS (Supabase Auth)
+# AUTHENTICATION - NOT IMPLEMENTED (Frontend handles this)
 # ============================================================================
-
-async def sign_up(email: str, password: str, user_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    Sign up a new user using Supabase Auth.
-    
-    This creates a user in auth.users and automatically triggers the creation
-    of a profile in public.users via the handle_new_user() trigger.
-    
-    Args:
-        email: User's email address
-        password: User's password (will be hashed by Supabase)
-        user_data: Optional dictionary of additional user metadata (e.g., {'name': 'John Doe'})
-        
-    Returns:
-        Dictionary with user data and session info
-        
-    Raises:
-        Exception: If signup fails (e.g., email already exists, weak password)
-        
-    Example:
-        >>> result = await sign_up(
-        ...     email="user@stocknity.com",
-        ...     password="securePassword123",
-        ...     user_data={'name': 'John Doe'}
-        ... )
-        >>> print(f"User created: {result['user']['id']}")
-    """
-    try:
-        client = _get_supabase_client()
-        
-        # Prepare signup data
-        signup_data = {
-            "email": email,
-            "password": password
-        }
-        
-        # Add user metadata if provided
-        if user_data:
-            signup_data["options"] = {"data": user_data}
-        
-        # Sign up using Supabase Auth
-        response = client.auth.sign_up(signup_data)
-        
-        if response.user:
-            logger.info(f"✅ User signed up: {email} (ID: {response.user.id})")
-            return {
-                'user': response.user.__dict__,
-                'session': response.session.__dict__ if response.session else None
-            }
-        
-        raise Exception("Signup failed: No user returned")
-        
-    except Exception as e:
-        logger.error(f"❌ Error signing up user {email}: {e}")
-        raise
-
-
-async def sign_in(email: str, password: str) -> Dict[str, Any]:
-    """
-    Sign in an existing user using Supabase Auth.
-    
-    Args:
-        email: User's email address
-        password: User's password
-        
-    Returns:
-        Dictionary with user data and session info (including JWT tokens)
-        
-    Raises:
-        Exception: If login fails (wrong credentials, unverified email, etc.)
-        
-    Example:
-        >>> result = await sign_in("user@stocknity.com", "password123")
-        >>> session = result['session']
-        >>> access_token = session['access_token']
-        >>> # Use access_token for authenticated API requests
-    """
-    try:
-        client = _get_supabase_client()
-        
-        # Sign in using Supabase Auth
-        response = client.auth.sign_in_with_password({
-            "email": email,
-            "password": password
-        })
-        
-        if response.user and response.session:
-            logger.info(f"✅ User signed in: {email}")
-            return {
-                'user': response.user.__dict__,
-                'session': response.session.__dict__
-            }
-        
-        raise Exception("Login failed: Invalid credentials")
-        
-    except Exception as e:
-        logger.error(f"❌ Error signing in user {email}: {e}")
-        raise
-
-
-async def sign_out() -> bool:
-    """
-    Sign out the current user.
-    
-    Returns:
-        True if sign out was successful
-        
-    Example:
-        >>> success = await sign_out()
-        >>> if success:
-        ...     print("User signed out")
-    """
-    try:
-        client = _get_supabase_client()
-        client.auth.sign_out()
-        logger.info("✅ User signed out")
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Error signing out: {e}")
-        raise
-
-
-async def get_current_user(access_token: str) -> Optional[Dict[str, Any]]:
-    """
-    Get the currently authenticated user from their JWT token.
-    
-    Args:
-        access_token: JWT access token from session
-        
-    Returns:
-        User dictionary if token is valid, None otherwise
-        
-    Example:
-        >>> user = await get_current_user(session['access_token'])
-        >>> if user:
-        ...     print(f"Current user: {user['email']}")
-    """
-    try:
-        client = _get_supabase_client()
-        
-        # Get user from token
-        response = client.auth.get_user(access_token)
-        
-        if response.user:
-            logger.info(f"✅ Retrieved current user: {response.user.email}")
-            return response.user.__dict__
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"❌ Error getting current user: {e}")
-        return None
-
-
-async def reset_password_email(email: str) -> bool:
-    """
-    Send a password reset email to the user.
-    
-    Args:
-        email: User's email address
-        
-    Returns:
-        True if email was sent successfully
-        
-    Raises:
-        Exception: If sending email fails
-        
-    Example:
-        >>> success = await reset_password_email("user@stocknity.com")
-        >>> if success:
-        ...     print("Password reset email sent")
-    """
-    try:
-        client = _get_supabase_client()
-        
-        # Send password reset email
-        client.auth.reset_password_email(email)
-        logger.info(f"✅ Password reset email sent to: {email}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Error sending password reset email to {email}: {e}")
-        raise
-
-
-async def update_password(access_token: str, new_password: str) -> bool:
-    """
-    Update user's password (requires current session token).
-    
-    Args:
-        access_token: JWT access token from current session
-        new_password: New password to set
-        
-    Returns:
-        True if password was updated successfully
-        
-    Raises:
-        Exception: If update fails
-        
-    Example:
-        >>> success = await update_password(session['access_token'], "newPassword123")
-        >>> if success:
-        ...     print("Password updated")
-    """
-    try:
-        client = _get_supabase_client()
-        
-        # Update password
-        response = client.auth.update_user(
-            access_token,
-            {"password": new_password}
-        )
-        
-        if response.user:
-            logger.info(f"✅ Password updated for user: {response.user.email}")
-            return True
-        
-        raise Exception("Password update failed")
-        
-    except Exception as e:
-        logger.error(f"❌ Error updating password: {e}")
-        raise
-
-
-async def verify_email(token: str) -> Dict[str, Any]:
-    """
-    Verify user's email using verification token from email link.
-    
-    Args:
-        token: Verification token from email link
-        
-    Returns:
-        Dictionary with user data and session
-        
-    Raises:
-        Exception: If verification fails
-        
-    Example:
-        >>> result = await verify_email(token_from_email_link)
-        >>> if result:
-        ...     print("Email verified!")
-    """
-    try:
-        client = _get_supabase_client()
-        
-        # Verify email
-        response = client.auth.verify_otp({
-            "token": token,
-            "type": "email"
-        })
-        
-        if response.user:
-            logger.info(f"✅ Email verified for user: {response.user.email}")
-            return {
-                'user': response.user.__dict__,
-                'session': response.session.__dict__ if response.session else None
-            }
-        
-        raise Exception("Email verification failed")
-        
-    except Exception as e:
-        logger.error(f"❌ Error verifying email: {e}")
-        raise
+# NOTE: All authentication is now handled by the frontend using Supabase JS SDK.
+# Backend does not need auth functions since users authenticate directly with Supabase.
+# 
+# Frontend handles these operations:
+# - supabase.auth.signUp() - User registration
+# - supabase.auth.signInWithPassword() - User login
+# - supabase.auth.signOut() - User logout
+# - supabase.auth.getUser() - Get current user from session
+# - supabase.auth.resetPasswordForEmail() - Password reset flow
+# - supabase.auth.updateUser() - Update password/email
+# - supabase.auth.verifyOtp() - Email verification
+#
+# Backend only needs to:
+# 1. Verify JWT tokens in API middleware (see TASK-014)
+# 2. Query user data using user_id from verified JWT
+# 3. Respect RLS policies (automatically enforced by Supabase)
+#
+# ============================================================================
 
 
 # Export commonly used functions
@@ -764,13 +518,4 @@ __all__ = [
     # Utility functions
     'count_user_portfolios',
     'health_check',
-    # Authentication operations
-    'sign_up',
-    'sign_in',
-    'sign_out',
-    'get_current_user',
-    'reset_password_email',
-    'update_password',
-    'verify_email'
 ]
-
