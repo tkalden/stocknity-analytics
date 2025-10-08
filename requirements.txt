@@ -12,3 +12,7 @@ schedule
 beautifulsoup4
 lxml
 supabase
+
+# Testing
+pytest
+pytest-asyncio
