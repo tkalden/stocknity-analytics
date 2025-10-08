@@ -9,6 +9,7 @@ This package contains implementations of famous investment strategies:
 """
 
 from backend.services.gurus.base_guru import BaseGuru
+from backend.services.gurus.buffett import WarrenBuffettStrategy
 
-__all__ = ['BaseGuru']
+__all__ = ['BaseGuru', 'WarrenBuffettStrategy']
 
