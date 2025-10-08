@@ -11,3 +11,4 @@ yfinance
 schedule
 beautifulsoup4
 lxml
+supabase
