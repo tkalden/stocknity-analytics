@@ -477,20 +477,300 @@ async def health_check() -> Dict[str, Any]:
         }
 
 
+# ============================================================================
+# AUTHENTICATION OPERATIONS (Supabase Auth)
+# ============================================================================
+
+async def sign_up(email: str, password: str, user_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Sign up a new user using Supabase Auth.
+    
+    This creates a user in auth.users and automatically triggers the creation
+    of a profile in public.users via the handle_new_user() trigger.
+    
+    Args:
+        email: User's email address
+        password: User's password (will be hashed by Supabase)
+        user_data: Optional dictionary of additional user metadata (e.g., {'name': 'John Doe'})
+        
+    Returns:
+        Dictionary with user data and session info
+        
+    Raises:
+        Exception: If signup fails (e.g., email already exists, weak password)
+        
+    Example:
+        >>> result = await sign_up(
+        ...     email="user@stocknity.com",
+        ...     password="securePassword123",
+        ...     user_data={'name': 'John Doe'}
+        ... )
+        >>> print(f"User created: {result['user']['id']}")
+    """
+    try:
+        client = _get_supabase_client()
+        
+        # Prepare signup data
+        signup_data = {
+            "email": email,
+            "password": password
+        }
+        
+        # Add user metadata if provided
+        if user_data:
+            signup_data["options"] = {"data": user_data}
+        
+        # Sign up using Supabase Auth
+        response = client.auth.sign_up(signup_data)
+        
+        if response.user:
+            logger.info(f"✅ User signed up: {email} (ID: {response.user.id})")
+            return {
+                'user': response.user.__dict__,
+                'session': response.session.__dict__ if response.session else None
+            }
+        
+        raise Exception("Signup failed: No user returned")
+        
+    except Exception as e:
+        logger.error(f"❌ Error signing up user {email}: {e}")
+        raise
+
+
+async def sign_in(email: str, password: str) -> Dict[str, Any]:
+    """
+    Sign in an existing user using Supabase Auth.
+    
+    Args:
+        email: User's email address
+        password: User's password
+        
+    Returns:
+        Dictionary with user data and session info (including JWT tokens)
+        
+    Raises:
+        Exception: If login fails (wrong credentials, unverified email, etc.)
+        
+    Example:
+        >>> result = await sign_in("user@stocknity.com", "password123")
+        >>> session = result['session']
+        >>> access_token = session['access_token']
+        >>> # Use access_token for authenticated API requests
+    """
+    try:
+        client = _get_supabase_client()
+        
+        # Sign in using Supabase Auth
+        response = client.auth.sign_in_with_password({
+            "email": email,
+            "password": password
+        })
+        
+        if response.user and response.session:
+            logger.info(f"✅ User signed in: {email}")
+            return {
+                'user': response.user.__dict__,
+                'session': response.session.__dict__
+            }
+        
+        raise Exception("Login failed: Invalid credentials")
+        
+    except Exception as e:
+        logger.error(f"❌ Error signing in user {email}: {e}")
+        raise
+
+
+async def sign_out() -> bool:
+    """
+    Sign out the current user.
+    
+    Returns:
+        True if sign out was successful
+        
+    Example:
+        >>> success = await sign_out()
+        >>> if success:
+        ...     print("User signed out")
+    """
+    try:
+        client = _get_supabase_client()
+        client.auth.sign_out()
+        logger.info("✅ User signed out")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error signing out: {e}")
+        raise
+
+
+async def get_current_user(access_token: str) -> Optional[Dict[str, Any]]:
+    """
+    Get the currently authenticated user from their JWT token.
+    
+    Args:
+        access_token: JWT access token from session
+        
+    Returns:
+        User dictionary if token is valid, None otherwise
+        
+    Example:
+        >>> user = await get_current_user(session['access_token'])
+        >>> if user:
+        ...     print(f"Current user: {user['email']}")
+    """
+    try:
+        client = _get_supabase_client()
+        
+        # Get user from token
+        response = client.auth.get_user(access_token)
+        
+        if response.user:
+            logger.info(f"✅ Retrieved current user: {response.user.email}")
+            return response.user.__dict__
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting current user: {e}")
+        return None
+
+
+async def reset_password_email(email: str) -> bool:
+    """
+    Send a password reset email to the user.
+    
+    Args:
+        email: User's email address
+        
+    Returns:
+        True if email was sent successfully
+        
+    Raises:
+        Exception: If sending email fails
+        
+    Example:
+        >>> success = await reset_password_email("user@stocknity.com")
+        >>> if success:
+        ...     print("Password reset email sent")
+    """
+    try:
+        client = _get_supabase_client()
+        
+        # Send password reset email
+        client.auth.reset_password_email(email)
+        logger.info(f"✅ Password reset email sent to: {email}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error sending password reset email to {email}: {e}")
+        raise
+
+
+async def update_password(access_token: str, new_password: str) -> bool:
+    """
+    Update user's password (requires current session token).
+    
+    Args:
+        access_token: JWT access token from current session
+        new_password: New password to set
+        
+    Returns:
+        True if password was updated successfully
+        
+    Raises:
+        Exception: If update fails
+        
+    Example:
+        >>> success = await update_password(session['access_token'], "newPassword123")
+        >>> if success:
+        ...     print("Password updated")
+    """
+    try:
+        client = _get_supabase_client()
+        
+        # Update password
+        response = client.auth.update_user(
+            access_token,
+            {"password": new_password}
+        )
+        
+        if response.user:
+            logger.info(f"✅ Password updated for user: {response.user.email}")
+            return True
+        
+        raise Exception("Password update failed")
+        
+    except Exception as e:
+        logger.error(f"❌ Error updating password: {e}")
+        raise
+
+
+async def verify_email(token: str) -> Dict[str, Any]:
+    """
+    Verify user's email using verification token from email link.
+    
+    Args:
+        token: Verification token from email link
+        
+    Returns:
+        Dictionary with user data and session
+        
+    Raises:
+        Exception: If verification fails
+        
+    Example:
+        >>> result = await verify_email(token_from_email_link)
+        >>> if result:
+        ...     print("Email verified!")
+    """
+    try:
+        client = _get_supabase_client()
+        
+        # Verify email
+        response = client.auth.verify_otp({
+            "token": token,
+            "type": "email"
+        })
+        
+        if response.user:
+            logger.info(f"✅ Email verified for user: {response.user.email}")
+            return {
+                'user': response.user.__dict__,
+                'session': response.session.__dict__ if response.session else None
+            }
+        
+        raise Exception("Email verification failed")
+        
+    except Exception as e:
+        logger.error(f"❌ Error verifying email: {e}")
+        raise
+
+
 # Export commonly used functions
 __all__ = [
     'supabase',
+    # User operations
     'get_user_by_email',
     'get_user_by_id',
     'create_user',
     'update_user',
     'delete_user',
+    # Portfolio operations
     'get_user_portfolios',
     'get_portfolio_by_id',
     'create_portfolio',
     'update_portfolio',
     'delete_portfolio',
+    # Utility functions
     'count_user_portfolios',
-    'health_check'
+    'health_check',
+    # Authentication operations
+    'sign_up',
+    'sign_in',
+    'sign_out',
+    'get_current_user',
+    'reset_password_email',
+    'update_password',
+    'verify_email'
 ]
 

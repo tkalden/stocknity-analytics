@@ -16,14 +16,16 @@ class User:
     """
     Represents a user in the Stocknity platform.
     
-    This model corresponds to the 'users' table in Supabase and includes
+    This model corresponds to the 'users' table in Supabase (public.users) and includes
     methods for checking advanced mode access and graduation eligibility.
     
+    Authentication is handled by Supabase Auth (auth.users table), so passwords
+    are NOT stored in this model - use supabase.auth methods for authentication.
+    
     Attributes:
-        id: Unique user identifier (UUID)
+        id: Unique user identifier (UUID) - matches auth.users.id
         email: User's email address
         name: User's full name
-        password_hash: Hashed password (stored in Supabase)
         experience_level: Investment experience ('beginner', 'intermediate', 'advanced')
         selected_guru: Preferred investment guru ('buffett', 'lynch', 'graham', 'dalio')
         investment_goal: Primary goal ('retirement', 'wealth', 'income')
@@ -40,7 +42,7 @@ class User:
     id: UUID
     email: str
     name: str
-    password_hash: str
+    # No password_hash! Authentication handled by Supabase Auth
     experience_level: str = 'beginner'
     selected_guru: Optional[str] = None
     investment_goal: Optional[str] = None
@@ -86,7 +88,7 @@ class User:
             id=user_id,
             email=data.get('email', ''),
             name=data.get('name', ''),
-            password_hash=data.get('password_hash', ''),
+            # No password_hash - handled by Supabase Auth
             experience_level=data.get('experience_level', 'beginner'),
             selected_guru=data.get('selected_guru'),
             investment_goal=data.get('investment_goal'),

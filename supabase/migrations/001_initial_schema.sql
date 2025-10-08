@@ -1,19 +1,23 @@
 -- Migration: 001_initial_schema
--- Description: Create users and portfolios tables with RLS policies
+-- Description: Create users and portfolios tables with RLS policies and Supabase Auth integration
 -- Created: 2025-10-08
+-- Updated: 2025-10-08 (Refactored to use Supabase Auth)
 
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- ============================================================================
--- USERS TABLE
+-- USERS TABLE (Links to auth.users)
 -- ============================================================================
+-- This table stores custom user data and links to Supabase Auth's auth.users table
+-- Authentication is handled by Supabase Auth (email/password stored in auth.users)
 
 CREATE TABLE IF NOT EXISTS users (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    -- id references auth.users, creating a 1-to-1 relationship
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     email TEXT UNIQUE NOT NULL,
     name TEXT NOT NULL,
-    password_hash TEXT NOT NULL,
+    -- No password_hash! Supabase Auth handles authentication
     experience_level TEXT DEFAULT 'beginner' CHECK (experience_level IN ('beginner', 'intermediate', 'advanced')),
     selected_guru TEXT CHECK (selected_guru IN ('buffett', 'lynch', 'graham', 'dalio')),
     investment_goal TEXT CHECK (investment_goal IN ('retirement', 'wealth', 'income')),
@@ -171,8 +175,36 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON users TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON portfolios TO authenticated;
 
 -- ============================================================================
+-- AUTO-CREATE USER PROFILE ON SIGNUP
+-- ============================================================================
+-- This trigger automatically creates a user profile in public.users when
+-- someone signs up via Supabase Auth (auth.users table)
+
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO public.users (id, email, name)
+    VALUES (
+        NEW.id,
+        NEW.email,
+        COALESCE(NEW.raw_user_meta_data->>'name', NEW.email)
+    );
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Trigger to call handle_new_user() when a new user signs up
+CREATE TRIGGER on_auth_user_created
+    AFTER INSERT ON auth.users
+    FOR EACH ROW
+    EXECUTE FUNCTION public.handle_new_user();
+
+COMMENT ON FUNCTION public.handle_new_user() IS 'Automatically creates user profile in public.users when auth.users record is created';
+
+-- ============================================================================
 -- MIGRATION COMPLETE
 -- ============================================================================
 
 -- Migration 001_initial_schema completed successfully
+-- Now supports Supabase Auth with automatic profile creation
 
