@@ -36,9 +36,6 @@ def create_app():
     # Security Configuration
     configure_security(app)
     
-    # Configure CORS with environment-based origins
-    configure_cors(app)
-    
     # Configuration
     app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY')
     if not app.config['SECRET_KEY']:
@@ -70,11 +67,21 @@ def create_app():
     
     # Security middleware
     setup_security_middleware(app)
-    
+
+    # Internal secret — reject requests not from Spring Boot
+    internal_secret = os.environ.get('INTERNAL_SECRET')
+
+    @app.before_request
+    def require_internal_secret():
+        if request.path == '/api/health' or request.path == '/':
+            return None
+        if internal_secret and request.headers.get('X-Internal-Secret') != internal_secret:
+            return jsonify({'error': 'Forbidden'}), 403
+
     # Import and register blueprints
     from src.api.auth import auth
     app.register_blueprint(auth)
-    
+
     from src.api.main import main
     app.register_blueprint(main)
     
