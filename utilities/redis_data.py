@@ -99,8 +99,7 @@ class RedisDataManager:
                 'timestamp': self._get_timestamp(),
                 'count': len(df)
             }
-            # Save with 7-day TTL for screener data (weekly updates)
-            self.r.setex(key, 7 * 24 * 60 * 60, json.dumps(data))
+            self.r.setex(key, 24 * 60 * 60, json.dumps(data))
             
             # Track the data save
             try:
@@ -113,7 +112,7 @@ class RedisDataManager:
                     sector=sector,
                     record_count=len(df),
                     size_bytes=len(json.dumps(data)),
-                    ttl_seconds=7 * 24 * 60 * 60  # 7 days
+                    ttl_seconds=24 * 60 * 60
                 )
             except Exception as e:
                 logging.warning(f"Failed to track stock data save: {e}")
