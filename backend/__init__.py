@@ -1,4 +1,0 @@
-"""
-Stocknity Backend Package
-"""
-

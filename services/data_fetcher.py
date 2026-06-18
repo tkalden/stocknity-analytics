@@ -14,11 +14,7 @@ import numpy as np
 from dataclasses import dataclass
 from enum import Enum
 import yfinance as yf
-from finvizfinance.screener.financial import Financial
-from finvizfinance.screener.valuation import Valuation
-from finvizfinance.screener.technical import Technical
-from finvizfinance.screener.ownership import Ownership
-from finvizfinance.screener.performance import Performance
+from services.massive_fetcher import fetch_sector_fundamentals, FetchResult
 from utilities.redis_data import redis_manager
 from utilities.constant import SECTORS, INDEX, METRIC_COLUMNS, METRIC_SCHEMA
 
@@ -83,15 +79,8 @@ class DataFetcher:
     """Advanced data fetcher with multiple sources and fallbacks"""
     
     def __init__(self):
-        self.rate_limiter = RateLimiter(calls_per_second=1)  # Conservative rate limiting
+        self.rate_limiter = RateLimiter(calls_per_second=1)
         self.session = None
-        self.finviz_services = {
-            'valuation': Valuation(),
-            'financial': Financial(),
-            'technical': Technical(),
-            'ownership': Ownership(),
-            'performance': Performance()
-        }
         
     async def __aenter__(self):
         self.session = aiohttp.ClientSession(
@@ -119,8 +108,7 @@ class DataFetcher:
         
         # Try different data sources
         sources = [
-            (self._fetch_from_finviz, DataSource.FINVIZ),
-            (self._fetch_from_yahoo, DataSource.YAHOO_FINANCE),
+            (self._fetch_from_yfinance_fundamentals, DataSource.YAHOO_FINANCE),
         ]
         
         for fetch_func, source in sources:
@@ -142,58 +130,24 @@ class DataFetcher:
             error="All data sources failed"
         )
     
-    async def _fetch_from_finviz(self, index: str, sector: str) -> DataFetchResult:
-        """Fetch data from Finviz with improved error handling"""
+    async def _fetch_from_yfinance_fundamentals(self, index: str, sector: str) -> DataFetchResult:
+        """Fetch fundamentals via yfinance (replaces finviz scraping)"""
         try:
-            all_data = []
-            
-            for service_name, service in self.finviz_services.items():
-                try:
-                    await self.rate_limiter.wait()
-                    
-                    # Set filters
-                    filters = {}
-                    if sector != 'Any':
-                        filters["Sector"] = sector
-                    if index != 'Any':
-                        filters["Index"] = index
-                    
-                    if filters:
-                        service.set_filter(filters_dict=filters)
-                    
-                    data = service.screener_view()
-                    if data is not None and not data.empty:
-                        all_data.append(data)
-                        logger.debug(f"Successfully fetched {service_name} data")
-                    
-                except Exception as e:
-                    logger.warning(f"Error fetching {service_name} data: {e}")
-                    continue
-            
-            if not all_data:
-                return DataFetchResult(
-                    success=False,
-                    data=pd.DataFrame(),
-                    source=DataSource.FINVIZ,
-                    error="No data returned from Finviz"
-                )
-            
-            # Combine and clean data
-            combined_data = pd.concat(all_data, axis=1)
-            cleaned_data = self._clean_and_validate_data(combined_data, index, sector)
-            
+            import asyncio
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, fetch_sector_fundamentals, sector)
             return DataFetchResult(
-                success=True,
-                data=cleaned_data,
-                source=DataSource.FINVIZ
+                success=result.success,
+                data=result.data,
+                source=DataSource.YAHOO_FINANCE,
+                error=result.error
             )
-            
         except Exception as e:
-            logger.error(f"Finviz fetch error: {e}")
+            logger.error(f"yfinance fetch error: {e}")
             return DataFetchResult(
                 success=False,
                 data=pd.DataFrame(),
-                source=DataSource.FINVIZ,
+                source=DataSource.YAHOO_FINANCE,
                 error=str(e)
             )
     
@@ -219,15 +173,19 @@ class DataFetcher:
                 await self.rate_limiter.wait()
                 
                 try:
-                    # Get basic info
                     ticker_data = yf.Tickers(' '.join(chunk))
-                    info = ticker_data.info
-                    
-                    # Convert to DataFrame
+                    info = {sym: ticker_data.tickers[sym].info for sym in chunk}
                     df = pd.DataFrame.from_dict(info, orient='index')
                     df['Ticker'] = df.index
+                    df = df.rename(columns={
+                        'trailingPE': 'P/E', 'forwardPE': 'Fwd P/E',
+                        'priceToBook': 'P/B', 'dividendYield': 'Dividend',
+                        'beta': 'Beta', 'currentPrice': 'Price',
+                        'regularMarketPrice': 'Price', 'pegRatio': 'PEG',
+                        'returnOnEquity': 'ROE', 'returnOnAssets': 'ROI',
+                        'heldPercentInsiders': 'Insider Own',
+                    })
                     all_data.append(df)
-                    
                 except Exception as e:
                     logger.warning(f"Error fetching chunk {i//chunk_size}: {e}")
                     continue
@@ -458,28 +416,7 @@ class AsyncDataProcessor:
                 import time
                 time.sleep(1)
             
-            # Try Finviz first
-            try:
-                # Use valuation screener for basic data
-                valuation = self.finviz_services['valuation']
-                valuation.set_filter(ticker=ticker)
-                df = valuation.screener_view()
-                
-                if not df.empty:
-                    # Clean and format the data
-                    df = self._clean_single_stock_data(df, ticker)
-                    self.rate_limiter.on_error()  # Success, reset backoff
-                    return df
-                    
-            except Exception as e:
-                error_msg = str(e).lower()
-                if '429' in error_msg or 'rate limit' in error_msg:
-                    self.rate_limiter.on_error(429)
-                    logger.warning(f"Rate limit hit for {ticker}, backing off")
-                else:
-                    logger.warning(f"Finviz failed for {ticker}: {e}")
-            
-            # Fallback to Yahoo Finance (no rate limiting issues)
+            # Fetch via Yahoo Finance
             try:
                 stock = yf.Ticker(ticker)
                 info = stock.info
@@ -596,13 +533,19 @@ def fetch_stock_data_sync(index: str, sector: str = 'Any') -> DataFetchResult:
         
         # Mark request as pending
         redis_tracker.add_pending_request(cache_key)
-        logger.info(f"🔄 No cached data found for {index}:{sector}, fetching from Finviz...")
-        
+        logger.info(f"🔄 No cached data found for {index}:{sector}, fetching via yfinance...")
+
         start_time = time.time()
-        
-        # Try Finviz first
+
+        # Fetch fundamentals via yfinance (replaces finviz scraping)
         try:
-            result = _fetch_from_finviz_sync(index, sector)
+            fetch_result = fetch_sector_fundamentals(sector)
+            result = DataFetchResult(
+                success=fetch_result.success,
+                data=fetch_result.data,
+                source=DataSource.YAHOO_FINANCE,
+                error=fetch_result.error
+            )
             response_time = int((time.time() - start_time) * 1000)
             
             if result.success and not result.data.empty:
@@ -613,7 +556,7 @@ def fetch_stock_data_sync(index: str, sector: str = 'Any') -> DataFetchResult:
                 redis_tracker.track_data_save(
                     key=cache_key,
                     data_type=DataType.STOCK_DATA,
-                    source=APISource.FINVIZ,
+                    source=APISource.YAHOO_FINANCE,
                     index=index,
                     sector=sector,
                     record_count=len(result.data),
@@ -623,7 +566,7 @@ def fetch_stock_data_sync(index: str, sector: str = 'Any') -> DataFetchResult:
                 
                 # Track the API call
                 redis_tracker.track_api_call(
-                    source=APISource.FINVIZ,
+                    source=APISource.YAHOO_FINANCE,
                     endpoint="screener_view",
                     parameters={"index": index, "sector": sector},
                     success=True,
@@ -638,7 +581,7 @@ def fetch_stock_data_sync(index: str, sector: str = 'Any') -> DataFetchResult:
             else:
                 # Track failed API call
                 redis_tracker.track_api_call(
-                    source=APISource.FINVIZ,
+                    source=APISource.YAHOO_FINANCE,
                     endpoint="screener_view",
                     parameters={"index": index, "sector": sector},
                     success=False,
@@ -650,7 +593,7 @@ def fetch_stock_data_sync(index: str, sector: str = 'Any') -> DataFetchResult:
         except Exception as e:
             logger.warning(f"Failed to fetch from Finviz: {e}")
             redis_tracker.track_api_call(
-                source=APISource.FINVIZ,
+                source=APISource.YAHOO_FINANCE,
                 endpoint="screener_view",
                 parameters={"index": index, "sector": sector},
                 success=False,
@@ -744,76 +687,6 @@ def fetch_stock_data_sync(index: str, sector: str = 'Any') -> DataFetchResult:
             error=str(e)
         )
 
-def _fetch_from_finviz_sync(index: str, sector: str) -> DataFetchResult:
-    """Synchronous Finviz fetch"""
-    try:
-        from finvizfinance.screener.financial import Financial
-        from finvizfinance.screener.valuation import Valuation
-        from finvizfinance.screener.technical import Technical
-        from finvizfinance.screener.ownership import Ownership
-        from finvizfinance.screener.performance import Performance
-        
-        services = {
-            'valuation': Valuation(),
-            'financial': Financial(),
-            'technical': Technical(),
-            'ownership': Ownership(),
-            'performance': Performance()
-        }
-        
-        all_data = []
-        
-        for service_name, service in services.items():
-            try:
-                # Set filters
-                filters = {}
-                if sector != 'Any':
-                    filters["Sector"] = sector
-                if index != 'Any':
-                    filters["Index"] = index
-                
-                if filters:
-                    service.set_filter(filters_dict=filters)
-                
-                data = service.screener_view()
-                if data is not None and not data.empty:
-                    all_data.append(data)
-                    logger.debug(f"Successfully fetched {service_name} data")
-                
-                # Add small delay to respect rate limits
-                time.sleep(0.5)
-                
-            except Exception as e:
-                logger.warning(f"Error fetching {service_name} data: {e}")
-                continue
-        
-        if not all_data:
-            return DataFetchResult(
-                success=False,
-                data=pd.DataFrame(),
-                source=DataSource.FINVIZ,
-                error="No data returned from Finviz"
-            )
-        
-        # Combine and clean data
-        combined_data = pd.concat(all_data, axis=1)
-        cleaned_data = _clean_and_validate_data_sync(combined_data, index, sector)
-        
-        return DataFetchResult(
-            success=True,
-            data=cleaned_data,
-            source=DataSource.FINVIZ
-        )
-        
-    except Exception as e:
-        logger.error(f"Finviz sync fetch error: {e}")
-        return DataFetchResult(
-            success=False,
-            data=pd.DataFrame(),
-            source=DataSource.FINVIZ,
-            error=str(e)
-        )
-
 def _fetch_from_yahoo_sync(index: str, sector: str) -> DataFetchResult:
     """Synchronous Yahoo Finance fetch"""
     try:
@@ -837,14 +710,19 @@ def _fetch_from_yahoo_sync(index: str, sector: str) -> DataFetchResult:
             try:
                 # Get basic info
                 ticker_data = yf.Tickers(' '.join(chunk))
-                info = ticker_data.info
-                
-                # Convert to DataFrame
+                info = {sym: ticker_data.tickers[sym].info for sym in chunk}
                 df = pd.DataFrame.from_dict(info, orient='index')
                 df['Ticker'] = df.index
+                df = df.rename(columns={
+                    'trailingPE': 'P/E', 'forwardPE': 'Fwd P/E',
+                    'priceToBook': 'P/B', 'dividendYield': 'Dividend',
+                    'beta': 'Beta', 'currentPrice': 'Price',
+                    'regularMarketPrice': 'Price', 'pegRatio': 'PEG',
+                    'returnOnEquity': 'ROE', 'returnOnAssets': 'ROI',
+                    'heldPercentInsiders': 'Insider Own',
+                })
                 all_data.append(df)
-                
-                # Add small delay
+
                 import time
                 time.sleep(0.5)
                 

@@ -4,6 +4,8 @@ flask-login
 flask-cors
 python-dotenv
 pandas
+numpy
+scipy
 redis
 requests
 aiohttp
@@ -11,8 +13,18 @@ yfinance
 schedule
 beautifulsoup4
 lxml
-supabase
+
+# Stefan Jansen Chapter 2 - Enhanced Market Data
+# High-frequency data processing
+# Data quality validation
+# Tick data processing
+quandl  # Economic and alternative data (Stefan Jansen requirement)
 
 # Testing
 pytest
 pytest-asyncio
+
+# Data Pipeline Optimization (Stefan Jansen Chapter 2)
+psutil  # System monitoring
+pyarrow  # Parquet support
+tables  # HDF5 support

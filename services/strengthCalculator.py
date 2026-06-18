@@ -81,18 +81,16 @@ class StrengthCalculator:
             df = AnnualReturn.update_with_return_data(df)
         
         # Create average metrics DataFrame from the data
+        _attrs = ["dividend", "pe", "fpe", "pb", "beta", "return_risk_ratio"]
         if not df.empty:
-            avg_metric_df = df[["dividend", "pe", "fpe", "pb", "beta", "return_risk_ratio"]].apply(pd.to_numeric, errors='coerce').mean()
+            _existing = [c for c in _attrs if c in df.columns]
+            avg_metric_df = df[_existing].apply(pd.to_numeric, errors='coerce').mean()
+            for _a in _attrs:
+                if _a not in avg_metric_df.index:
+                    avg_metric_df[_a] = 0
         else:
-            avg_metric_df = pd.Series({
-                "dividend": 0,
-                "pe": 0,
-                "fpe": 0,
-                "pb": 0,
-                "beta": 0,
-                "return_risk_ratio": 0
-            })
-        
+            avg_metric_df = pd.Series({a: 0 for a in _attrs})
+
         # Calculate strength
         df = self._calculate_strength(df, avg_metric_df, stock_type)
         
@@ -177,17 +175,15 @@ class StrengthCalculator:
                             df = AnnualReturn.update_with_return_data(df)
                         
                         # Create average metrics DataFrame from the data
+                        _attrs = ["dividend", "pe", "fpe", "pb", "beta", "return_risk_ratio"]
                         if not df.empty:
-                            avg_metric_df = df[["dividend", "pe", "fpe", "pb", "beta", "return_risk_ratio"]].apply(pd.to_numeric, errors='coerce').mean()
+                            _existing = [c for c in _attrs if c in df.columns]
+                            avg_metric_df = df[_existing].apply(pd.to_numeric, errors='coerce').mean()
+                            for _a in _attrs:
+                                if _a not in avg_metric_df.index:
+                                    avg_metric_df[_a] = 0
                         else:
-                            avg_metric_df = pd.Series({
-                                "dividend": 0,
-                                "pe": 0,
-                                "fpe": 0,
-                                "pb": 0,
-                                "beta": 0,
-                                "return_risk_ratio": 0
-                            })
+                            avg_metric_df = pd.Series({a: 0 for a in _attrs})
                         df = self._calculate_strength(df, avg_metric_df, stock_type)
                         self._save_strength_to_cache(df, stock_type, sector, index)
                         
