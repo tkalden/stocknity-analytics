@@ -560,189 +560,23 @@ async def fetch_stock_data_async(index: str, sector: str = 'Any') -> DataFetchRe
         return await fetcher.fetch_stock_data(index, sector)
 
 def fetch_stock_data_sync(index: str, sector: str = 'Any') -> DataFetchResult:
-    """Synchronous data fetch implementation with duplicate prevention"""
+    """Read stock data from Redis only. stocknity-market-data populates stock_data:* keys."""
     try:
-        from utilities.redis_tracker import redis_tracker, DataType, APISource
-        
-        cache_key = f"stock_data:{index}:{sector}"
-        
-        # Try Redis cache first
         cached_data = redis_manager.get_stock_data(index, sector)
         if not cached_data.empty:
-            # Track cache hit
-            redis_tracker.track_data_access(cache_key)
-            logger.info(f"✅ Using cached data for {index}:{sector} ({len(cached_data)} records)")
-            return DataFetchResult(
-                success=True,
-                data=cached_data,
-                source=DataSource.FINVIZ
-            )
-        
-        # Check if request is already pending
-        if redis_tracker.is_request_pending(cache_key):
-            logger.info(f"🔄 Request already pending for {index}:{sector}, waiting...")
-            # Wait a bit and check cache again
-            time.sleep(2)
-            
-            cached_data = redis_manager.get_stock_data(index, sector)
-            if not cached_data.empty:
-                redis_tracker.track_data_access(cache_key)
-                logger.info(f"✅ Got data after waiting for {index}:{sector} ({len(cached_data)} records)")
-                return DataFetchResult(
-                    success=True,
-                    data=cached_data,
-                    source=DataSource.FINVIZ
-                )
-        
-        # Mark request as pending
-        redis_tracker.add_pending_request(cache_key)
-        logger.info(f"🔄 No cached data found for {index}:{sector}, fetching from Finviz...")
-        
-        start_time = time.time()
-        
-        # Try Finviz first
-        try:
-            result = _fetch_from_finviz_sync(index, sector)
-            response_time = int((time.time() - start_time) * 1000)
-            
-            if result.success and not result.data.empty:
-                # Cache the successful result
-                _cache_data_sync(result.data, index, sector)
-                
-                # Track the data save
-                redis_tracker.track_data_save(
-                    key=cache_key,
-                    data_type=DataType.STOCK_DATA,
-                    source=APISource.FINVIZ,
-                    index=index,
-                    sector=sector,
-                    record_count=len(result.data),
-                    size_bytes=len(result.data.to_json()),
-                    ttl_seconds=7 * 24 * 60 * 60  # 7 days
-                )
-                
-                # Track the API call
-                redis_tracker.track_api_call(
-                    source=APISource.FINVIZ,
-                    endpoint="screener_view",
-                    parameters={"index": index, "sector": sector},
-                    success=True,
-                    response_time_ms=response_time,
-                    record_count=len(result.data),
-                    cache_key=cache_key
-                )
-                
-                logger.info(f"💾 Cached fresh data for {index}:{sector} ({len(result.data)} records)")
-                redis_tracker.remove_pending_request(cache_key)
-                return result
-            else:
-                # Track failed API call
-                redis_tracker.track_api_call(
-                    source=APISource.FINVIZ,
-                    endpoint="screener_view",
-                    parameters={"index": index, "sector": sector},
-                    success=False,
-                    response_time_ms=response_time,
-                    record_count=0,
-                    cache_key=cache_key
-                )
-                
-        except Exception as e:
-            logger.warning(f"Failed to fetch from Finviz: {e}")
-            redis_tracker.track_api_call(
-                source=APISource.FINVIZ,
-                endpoint="screener_view",
-                parameters={"index": index, "sector": sector},
-                success=False,
-                response_time_ms=int((time.time() - start_time) * 1000),
-                record_count=0,
-                cache_key=cache_key
-            )
-        
-        # Try Yahoo Finance as fallback
-        try:
-            result = _fetch_from_yahoo_sync(index, sector)
-            response_time = int((time.time() - start_time) * 1000)
-            
-            if result.success and not result.data.empty:
-                # Cache the successful result
-                _cache_data_sync(result.data, index, sector)
-                
-                # Track the data save
-                redis_tracker.track_data_save(
-                    key=cache_key,
-                    data_type=DataType.STOCK_DATA,
-                    source=APISource.YAHOO_FINANCE,
-                    index=index,
-                    sector=sector,
-                    record_count=len(result.data),
-                    size_bytes=len(result.data.to_json()),
-                    ttl_seconds=7 * 24 * 60 * 60  # 7 days
-                )
-                
-                # Track the API call
-                redis_tracker.track_api_call(
-                    source=APISource.YAHOO_FINANCE,
-                    endpoint="ticker_info",
-                    parameters={"index": index, "sector": sector},
-                    success=True,
-                    response_time_ms=response_time,
-                    record_count=len(result.data),
-                    cache_key=cache_key
-                )
-                
-                logger.info(f"💾 Cached Yahoo Finance data for {index}:{sector} ({len(result.data)} records)")
-                redis_tracker.remove_pending_request(cache_key)
-                return result
-            else:
-                # Track failed API call
-                redis_tracker.track_api_call(
-                    source=APISource.YAHOO_FINANCE,
-                    endpoint="ticker_info",
-                    parameters={"index": index, "sector": sector},
-                    success=False,
-                    response_time_ms=response_time,
-                    record_count=0,
-                    cache_key=cache_key
-                )
-                
-        except Exception as e:
-            logger.warning(f"Failed to fetch from Yahoo Finance: {e}")
-            redis_tracker.track_api_call(
-                source=APISource.YAHOO_FINANCE,
-                endpoint="ticker_info",
-                parameters={"index": index, "sector": sector},
-                success=False,
-                response_time_ms=int((time.time() - start_time) * 1000),
-                record_count=0,
-                cache_key=cache_key
-            )
-        
-        # Remove pending request
-        redis_tracker.remove_pending_request(cache_key)
-        
+            logger.info(f"Cache hit for {index}:{sector} ({len(cached_data)} records)")
+            return DataFetchResult(success=True, data=cached_data, source=DataSource.FINVIZ)
+
+        logger.info(f"No cached stock_data for {index}:{sector} — awaiting market-data service")
         return DataFetchResult(
             success=False,
             data=pd.DataFrame(),
             source=DataSource.FINVIZ,
-            error="All data sources failed"
+            error="Awaiting market-data population"
         )
-        
     except Exception as e:
-        logger.error(f"Error in sync fetch: {e}")
-        # Remove pending request on error
-        try:
-            from utilities.redis_tracker import redis_tracker
-            redis_tracker.remove_pending_request(cache_key)
-        except:
-            pass
-        
-        return DataFetchResult(
-            success=False,
-            data=pd.DataFrame(),
-            source=DataSource.FINVIZ,
-            error=str(e)
-        )
+        logger.error(f"Error reading stock_data from Redis: {e}")
+        return DataFetchResult(success=False, data=pd.DataFrame(), source=DataSource.FINVIZ, error=str(e))
 
 def _fetch_from_finviz_sync(index: str, sector: str) -> DataFetchResult:
     """Synchronous Finviz fetch"""
