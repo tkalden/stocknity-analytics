@@ -91,6 +91,10 @@ if __name__ == '__main__':
     t = threading.Thread(target=run_refresh_scheduler, daemon=True)
     t.start()
 
+    from utilities.redis_data import redis_manager
+    from services.price_cache import start_price_cache
+    start_price_cache(redis_manager.r)
+
     port = int(os.environ.get('PORT', 5001))
     debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
     app.run(debug=debug, host='0.0.0.0', port=port)
