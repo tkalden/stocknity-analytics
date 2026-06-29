@@ -248,72 +248,10 @@ class RedisDataManager:
             logging.error(f"Error retrieving average metrics: {e}")
             return pd.DataFrame()
     
-    def save_user(self, email: str, name: str, password: str) -> bool:
-        """Save user data"""
-        if not self.available:
-            logging.warning("Redis not available - skipping save operation")
-            return False
-        
-        try:
-            user_data = {
-                'email': email,
-                'name': name,
-                'password': password,
-                'created_at': self._get_timestamp(),
-                'id': self._generate_id()
-            }
-            self.r.hset('users', email, json.dumps(user_data))
-            logging.info(f"Saved user data for {email}")
-            return True
-        except Exception as e:
-            logging.error(f"Error saving user data: {e}")
-            return False
-    
-    def get_user_by_email(self, email: str) -> Optional[Dict]:
-        """Get user by email"""
-        if not self.available:
-            logging.warning("Redis not available - returning None")
-            return None
-        
-        try:
-            user_data = self.r.hget('users', email)
-            if user_data:
-                return json.loads(user_data)
-            else:
-                logging.info(f"No user found for email: {email}")
-                return None
-        except Exception as e:
-            logging.error(f"Error retrieving user data: {e}")
-            return None
+    # NOTE: User persistence (users hash, authentication) has been removed.
+    # Auth and portfolio persistence are owned by the Spring gateway + Postgres.
+    # Flask is read-only analytics and never writes user records.
 
-    def get_user_by_id(self, user_id: str) -> Optional[Dict]:
-        """Get user by user_id"""
-        if not self.available:
-            logging.warning("Redis not available - returning None")
-            return None
-
-        try:
-            # Get all users and find the one with matching user_id
-            all_users = self.r.hgetall('users')
-            for email, user_data_str in all_users.items():
-                user_data = json.loads(user_data_str)
-                if user_data.get('id') == user_id:
-                    logging.info(f"Found user with ID: {user_id}")
-                    return user_data
-            
-            logging.info(f"No user found for user_id: {user_id}")
-            return None
-        except Exception as e:
-            logging.error(f"Error retrieving user data by ID: {e}")
-            return None
-    
-    def authenticate_user(self, email: str, password: str) -> Optional[Dict]:
-        """Authenticate user"""
-        user = self.get_user_by_email(email)
-        if user and user.get('password') == password:
-            return user
-        return None
-    
     def save_portfolio(self, user_id: str, portfolio_data: pd.DataFrame) -> str:
         """Save portfolio data"""
         if not self.available:

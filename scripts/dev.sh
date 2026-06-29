@@ -59,14 +59,14 @@ fi
 
 # Check if Flask app is ready
 print_status "Checking Flask application..."
-if curl -f http://localhost:5000/ > /dev/null 2>&1; then
+if curl -f http://localhost:5001/ > /dev/null 2>&1; then
     print_status "Flask application is ready! ✅"
 else
     print_warning "Flask application might not be ready yet. Check logs below."
 fi
 
 print_status "Local development environment is running! 🎉"
-print_status "Application URL: http://localhost:5000"
+print_status "Application URL: http://localhost:5001"
 print_status "Redis URL: localhost:6379"
 
 print_status "Showing logs (Ctrl+C to stop)..."

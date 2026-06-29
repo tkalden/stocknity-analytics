@@ -4,7 +4,6 @@ import uuid
 import numpy as np
 import pandas as pd
 from flask import flash
-from flask_login import current_user
 
 import utilities.helper as helper
 from services.annualReturn import AnnualReturn

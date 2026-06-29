@@ -1,11 +1,16 @@
 """
-Supabase Client Configuration
+Supabase Client Configuration — QUARANTINED / NOT WIRED INTO THE APP.
 
-This module provides a singleton Supabase client and helper functions
-for database operations including user and portfolio management.
+The Spring gateway + Postgres now own ALL user and portfolio persistence.
+This Flask service is read-only analytics and does NOT write user or portfolio
+records. The async helper functions below (create_user, update_user,
+create_portfolio, etc.) are dead code: they are not imported or awaited
+anywhere in the application and are retained only for reference during the
+migration. Do not call them from new code — route persistence through the
+Spring gateway instead.
 
-NOTE: Authentication is handled ENTIRELY by the frontend using Supabase JS SDK.
-Backend only verifies JWT tokens and operates on user data.
+NOTE: Authentication is handled ENTIRELY by the Spring gateway + frontend.
+This module is intentionally left unimported.
 """
 
 import os
