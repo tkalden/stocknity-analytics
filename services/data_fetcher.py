@@ -128,8 +128,8 @@ class DataFetcher:
                 await self.rate_limiter.wait()
                 result = await fetch_func(index, sector)
                 if result.success and not result.data.empty:
-                    # Cache the successful result
-                    self._cache_data(result.data, index, sector)
+                    # Flask is read-only: no cache write. The market-data
+                    # service owns population of stock_data:* keys.
                     return result
             except Exception as e:
                 logger.warning(f"Failed to fetch from {source.value}: {e}")
@@ -329,14 +329,6 @@ class DataFetcher:
             logger.error(f"Error mapping schema: {e}")
             return df
     
-    def _cache_data(self, df: pd.DataFrame, index: str, sector: str):
-        """Cache data in Redis with TTL"""
-        try:
-            redis_manager.save_stock_data(df, index, sector)
-            logger.info(f"Cached data for {index}:{sector}")
-        except Exception as e:
-            logger.error(f"Error caching data: {e}")
-
 class AsyncDataProcessor:
     """Asynchronous data processor for background tasks"""
     
@@ -782,13 +774,4 @@ def _map_to_schema_sync(df: pd.DataFrame) -> pd.DataFrame:
     except Exception as e:
         logger.error(f"Error mapping schema: {e}")
         return df
-
-def _cache_data_sync(df: pd.DataFrame, index: str, sector: str):
-    """Cache data in Redis with TTL (sync version)"""
-    try:
-        redis_manager.save_stock_data(df, index, sector)
-        logger.info(f"Cached data for {index}:{sector}")
-    except Exception as e:
-        logger.error(f"Error caching data: {e}")
-
 

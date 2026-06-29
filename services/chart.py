@@ -20,24 +20,23 @@ class chart():
         self.sectors = SECTORS
  
     def get_chart_data(self, stock_type):
-        """Get chart data with caching to avoid multiple API calls"""
-        # Check cache first
+        """Get chart data computed in-memory from canonical Redis data.
+
+        READ-ONLY: a cached chart_data:* key is served if the market-data
+        service populated one, but Flask never writes chart data back.
+        """
+        # Serve a pre-computed chart_data:* key if present (read-only).
         cache_key = f"chart_data:{stock_type}:{self.index}"
         cached_data = self._get_chart_from_cache(cache_key)
-        
+
         if cached_data:
             logging.info(f'Retrieved chart data from cache for {stock_type}')
             redis_tracker.track_data_access(cache_key)
             return cached_data
-        
-        # If not in cache, calculate and cache
-        logging.info(f'Calculating chart data for {stock_type} (not in cache)')
-        top_dict = self._calculate_chart_data(stock_type)
-        
-        # Cache the result
-        self._save_chart_to_cache(cache_key, top_dict)
-        
-        return top_dict
+
+        # Otherwise compute in-memory from canonical stock_data (no write back).
+        logging.info(f'Computing chart data for {stock_type} (not cached)')
+        return self._calculate_chart_data(stock_type)
 
     def _get_chart_from_cache(self, cache_key):
         """Get chart data from Redis cache"""
@@ -49,24 +48,6 @@ class chart():
         except Exception as e:
             logging.error(f"Error getting chart data from cache: {e}")
             return None
-
-    def _save_chart_to_cache(self, cache_key, chart_data):
-        """Save chart data to Redis cache"""
-        try:
-            # Cache for 24 hours (86400 seconds)
-            redis_manager.r.setex(cache_key, 86400, json.dumps(chart_data))
-            from utilities.redis_tracker import DataType, APISource
-            redis_tracker.track_data_save(
-                cache_key, 
-                DataType.CHART_DATA, 
-                APISource.CHART_SERVICE,
-                index=self.index,
-                record_count=len(chart_data),
-                ttl_seconds=86400
-            )
-            logging.info(f'Cached chart data with key: {cache_key}')
-        except Exception as e:
-            logging.error(f"Error saving chart data to cache: {e}")
 
     def _calculate_chart_data(self, stock_type):
         """Calculate chart data for all sectors using individual API calls with caching"""
