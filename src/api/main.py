@@ -6,7 +6,7 @@ import numpy as np
 from flask import Blueprint, request, jsonify, current_app
 
 from services.portfolio import portfolio as buildPortfolio
-from services.strengthCalculator import StrengthCalculator
+from services.strengthCalculator import StrengthCalculator, CanonicalDataUnavailable
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -71,6 +71,13 @@ def api_portfolio():
                 return jsonify({'success': True, 'data': portfolio.to_dict('records')})
             return jsonify({'success': False, 'error': 'Failed to build portfolio'})
 
+        except CanonicalDataUnavailable as e:
+            current_app.logger.warning(f"Canonical data unavailable: {e}")
+            return jsonify({
+                'success': False,
+                'error': 'Market data not yet available',
+                'detail': str(e)
+            }), 503
         except Exception as e:
             current_app.logger.error(f"Portfolio error: {e}")
             return jsonify({'success': False, 'error': str(e)})
@@ -114,6 +121,13 @@ def api_advanced_portfolio():
             'method': method
         })
 
+    except CanonicalDataUnavailable as e:
+        current_app.logger.warning(f"Canonical data unavailable: {e}")
+        return jsonify({
+            'success': False,
+            'error': 'Market data not yet available',
+            'detail': str(e)
+        }), 503
     except Exception as e:
         current_app.logger.error(f"Advanced portfolio error: {e}")
         return jsonify({'success': False, 'error': str(e)})
@@ -157,6 +171,13 @@ def api_compare_optimization_methods():
 
         return jsonify({'success': True, 'results': formatted})
 
+    except CanonicalDataUnavailable as e:
+        current_app.logger.warning(f"Canonical data unavailable: {e}")
+        return jsonify({
+            'success': False,
+            'error': 'Market data not yet available',
+            'detail': str(e)
+        }), 503
     except Exception as e:
         current_app.logger.error(f"Compare methods error: {e}")
         return jsonify({'success': False, 'error': str(e)})
@@ -206,6 +227,13 @@ def api_portfolio_backtest():
             'portfolio_data': backtest_results['portfolio_data'].to_dict('records')
         })
 
+    except CanonicalDataUnavailable as e:
+        current_app.logger.warning(f"Canonical data unavailable: {e}")
+        return jsonify({
+            'success': False,
+            'error': 'Market data not yet available',
+            'detail': str(e)
+        }), 503
     except Exception as e:
         current_app.logger.error(f"Backtest error: {e}")
         return jsonify({'success': False, 'error': str(e)})

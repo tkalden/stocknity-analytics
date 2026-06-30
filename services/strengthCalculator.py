@@ -5,116 +5,107 @@ import pandas as pd
 
 from enums.enum import StockType
 from services.annualReturn import AnnualReturn
-from services.data_fetcher import fetch_stock_data_sync
 from utilities.redis_data import redis_manager
 
 # Using new async data fetcher instead of SourceDataMapperService
 AnnualReturn = AnnualReturn()
 
+# Documented canonical schema written by the stocknity-market-data service
+# (ScreenerDataAggregator) into the stock_data:{index}:{sector} Redis keys.
+CANONICAL_COLUMNS = [
+    "Ticker", "pe", "pb", "fpe", "peg",
+    "dividend", "annual_return", "today_change", "price",
+]
+
+
+class CanonicalDataUnavailable(Exception):
+    """Raised when the canonical stock_data:* key is missing, empty, or malformed.
+
+    Flask is read-only: it must NOT refetch from yfinance/FMP when the
+    market-data service has not yet populated the canonical key. Endpoints
+    catch this and surface HTTP 503.
+    """
+
+
 class StrengthCalculator:
 
     def __init__(self):
         self.cache_key_prefix = "strength_data"
-    
-    def _get_cache_key(self, stock_type, sector, index):
-        """Generate cache key for strength data"""
-        return f"{self.cache_key_prefix}:{stock_type}:{sector}:{index}"
-    
-    def _get_strength_from_cache(self, stock_type, sector, index):
-        """Get strength data from Redis cache"""
-        cache_key = self._get_cache_key(stock_type, sector, index)
-        df = redis_manager.get_strength_data(cache_key)
-        if not df.empty:
-            # Track cache hit
-            try:
-                from utilities.redis_tracker import redis_tracker
-                redis_tracker.track_data_access(cache_key)
-            except Exception as e:
-                logging.warning(f"Failed to track strength data access: {e}")
-            
-            logging.debug(f"Retrieved strength data from cache for {stock_type}:{sector}:{index}")
-            return df
-        return pd.DataFrame()
-    
-    def _save_strength_to_cache(self, df, stock_type, sector, index):
-        """Save strength data to Redis cache"""
-        cache_key = self._get_cache_key(stock_type, sector, index)
-        redis_manager.save_strength_data(df, cache_key)
-        
-        # Track the data save
-        try:
-            from utilities.redis_tracker import redis_tracker, DataType, APISource
-            redis_tracker.track_data_save(
-                key=cache_key,
-                data_type=DataType.STRENGTH_DATA,
-                source=APISource.CALCULATED,
-                index=index,
-                sector=sector,
-                stock_type=stock_type,
-                record_count=len(df),
-                size_bytes=len(df.to_json()),
-                ttl_seconds=24 * 60 * 60  # 24 hours
+
+    def _read_canonical_data(self, index, sector):
+        """Read the canonical stock_data:{index}:{sector} key into a DataFrame.
+
+        Raises CanonicalDataUnavailable if the key is missing/empty or does not
+        contain the documented columns. Never writes anything back.
+        """
+        df = redis_manager.get_stock_data(index, sector)
+        if df is None or df.empty:
+            raise CanonicalDataUnavailable(
+                f"Canonical stock_data:{index}:{sector} is missing or empty. "
+                "Awaiting population by the stocknity-market-data service."
             )
-        except Exception as e:
-            logging.warning(f"Failed to track strength data save: {e}")
-        
-        logging.debug(f"Saved strength data to cache for {stock_type}:{sector}:{index}")
+
+        missing = [col for col in CANONICAL_COLUMNS if col not in df.columns]
+        if missing:
+            raise CanonicalDataUnavailable(
+                f"Canonical stock_data:{index}:{sector} is missing required "
+                f"columns: {missing}. Expected schema: {CANONICAL_COLUMNS}."
+            )
+
+        return df
 
     def calculate_strength_value(self, stock_type, sector, index):
-        """Calculate strength value with caching"""
-        logging.debug(f"Calculating strength value for {stock_type} Stock")
-        
-        # Try to get from cache first
-        cached_df = self._get_strength_from_cache(stock_type, sector, index)
-        if not cached_df.empty:
-            return cached_df
-        
-        # Calculate if not in cache
-        logging.info(f"Strength data not found in cache for {stock_type}:{sector}:{index}, calculating...")
-        result = fetch_stock_data_sync(index, sector)
-        if result.success and not result.data.empty:
-            df = result.data
-        else:
-            df = pd.DataFrame()
-        
-        if not df.empty:
-            df = AnnualReturn.update_with_return_data(df)
-        
-        # Create average metrics DataFrame from the data
-        _attrs = ["dividend", "pe", "fpe", "pb", "beta", "return_risk_ratio"]
-        if not df.empty:
-            _existing = [c for c in _attrs if c in df.columns]
-            avg_metric_df = df[_existing].apply(pd.to_numeric, errors='coerce').mean()
-            for _a in _attrs:
-                if _a not in avg_metric_df.index:
-                    avg_metric_df[_a] = 0
-        else:
-            avg_metric_df = pd.Series({a: 0 for a in _attrs})
+        """Compute strength in-memory from canonical Redis data. READ-ONLY.
 
-        # Calculate strength
+        Reads stock_data:{index}:{sector} (written by the market-data service),
+        validates the documented schema, merges return data and computes the
+        strength score in-memory. Nothing is written back to Redis.
+
+        Raises:
+            CanonicalDataUnavailable: if the canonical key is missing/empty or
+                does not match the documented schema. Callers surface HTTP 503.
+        """
+        logging.debug(f"Calculating strength value for {stock_type} Stock")
+
+        df = self._read_canonical_data(index, sector)
+
+        # Enrich with return/risk data (in-memory merge).
+        df = AnnualReturn.update_with_return_data(df)
+
+        # Create average metrics from the data
+        if not df.empty:
+            avg_metric_df = df[["dividend", "pe", "fpe", "pb", "beta", "return_risk_ratio"]].apply(pd.to_numeric, errors='coerce').mean()
+        else:
+            avg_metric_df = pd.Series({
+                "dividend": 0,
+                "pe": 0,
+                "fpe": 0,
+                "pb": 0,
+                "beta": 0,
+                "return_risk_ratio": 0
+            })
+
+        # Calculate strength (in-memory only)
         df = self._calculate_strength(df, avg_metric_df, stock_type)
-        
-        # Save to cache
-        self._save_strength_to_cache(df, stock_type, sector, index)
-        
+
         return df
-    
+
     def _calculate_strength(self, df, avg_metric_df, stock_type):
         """Calculate strength values for the dataframe"""
         if df.empty:
             return df
-            
+
         attributes = ["dividend", "pe", "fpe", "pb", "beta", "return_risk_ratio"]
         df["strength"] = 0
-        
+
         for col in attributes:
             if col not in df.columns:
                 logging.warning(f"Column {col} not found in DataFrame, skipping")
                 continue
-                
+
             df[col].replace('nan', np.nan, inplace=True)
             df[col].replace('None', np.nan, inplace=True)
-            
+
             if col == 'beta':
                 df["strength"] = df["strength"] - np.where(df[col].isnull(), 0, df[col].astype(float))
             elif col == 'return_risk_ratio':
@@ -127,68 +118,16 @@ class StrengthCalculator:
                         df["strength"] = df["strength"] + new_col
                     else:
                         df["strength"] = df["strength"] - new_col
-        
+
         if stock_type == StockType.VALUE.value:
             df["strength"] = 1 * df["strength"]
         elif stock_type == StockType.GROWTH.value:
             df["strength"] = -1 * df["strength"]
         else:
             raise ValueError("Stock Type must be Value or Growth")
-        
+
         df = df.replace(np.nan, 0)
         df = np.round(df, decimals=3)
         df = df.sort_values(by=["strength"], ascending=[False])
-        
+
         return df
-    
-    def clear_strength_cache(self):
-        """Clear all strength data from cache"""
-        logging.info("Clearing strength data cache")
-        redis_manager.clear_strength_cache(self.cache_key_prefix)
-    
-    def precalculate_all_strength_data(self):
-        """Precalculate strength data for all combinations and cache them"""
-        logging.info("Starting precalculation of all strength data")
-        
-        from utilities.constant import SECTORS
-        stock_types = [StockType.VALUE.value, StockType.GROWTH.value]
-        indices = ["S&P 500", "DJIA"]
-        
-        total_combinations = len(SECTORS) * len(stock_types) * len(indices)
-        current = 0
-        
-        for index in indices:
-            for sector in SECTORS:
-                for stock_type in stock_types:
-                    current += 1
-                    logging.info(f"Precalculating strength data ({current}/{total_combinations}): {stock_type}:{sector}:{index}")
-                    
-                    try:
-                        # Calculate and cache strength data
-                        result = fetch_stock_data_sync(index, sector)
-                        if result.success and not result.data.empty:
-                            df = result.data
-                        else:
-                            df = pd.DataFrame()
-                        
-                        if not df.empty:
-                            df = AnnualReturn.update_with_return_data(df)
-                        
-                        # Create average metrics DataFrame from the data
-                        _attrs = ["dividend", "pe", "fpe", "pb", "beta", "return_risk_ratio"]
-                        if not df.empty:
-                            _existing = [c for c in _attrs if c in df.columns]
-                            avg_metric_df = df[_existing].apply(pd.to_numeric, errors='coerce').mean()
-                            for _a in _attrs:
-                                if _a not in avg_metric_df.index:
-                                    avg_metric_df[_a] = 0
-                        else:
-                            avg_metric_df = pd.Series({a: 0 for a in _attrs})
-                        df = self._calculate_strength(df, avg_metric_df, stock_type)
-                        self._save_strength_to_cache(df, stock_type, sector, index)
-                        
-                        logging.info(f"Successfully cached strength data for {stock_type}:{sector}:{index} ({len(df)} stocks)")
-                    except Exception as e:
-                        logging.error(f"Error precalculating strength data for {stock_type}:{sector}:{index}: {e}")
-        
-        logging.info("Completed precalculation of all strength data")

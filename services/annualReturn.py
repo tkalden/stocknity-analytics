@@ -121,91 +121,33 @@ class AnnualReturn:
 
     def get_annual_return_data(self):
         df = redis_manager.get_annual_returns()
-        
-        # Check if data exists and is valid
-        if not df.empty and not df['expected_annual_return'].isna().all():
-            # Check if we have a reasonable number of stocks (at least 100)
-            if len(df) >= 100:
-                # Check if cache is fresh (less than 12 hours old)
-                cache_status = redis_manager.get_annual_returns_cache_status()
-                if cache_status.get('status') == 'cached':
-                    ttl_seconds = cache_status.get('ttl_seconds', 0)
-                    # If TTL is more than 12 hours (43200 seconds), cache is fresh
-                    if ttl_seconds > 43200:
-                        logging.info(f"Retrieved fresh annual returns from Redis cache ({len(df)} stocks, {ttl_seconds//3600}h remaining)")
-                        return df
-                    else:
-                        logging.info(f"Annual returns cache is aging ({ttl_seconds//3600}h remaining), but still usable")
-                        return df
-                else:
-                    logging.info(f"Retrieved annual returns from Redis cache ({len(df)} stocks)")
-                    return df
-            else:
-                logging.info(f"Annual returns in Redis have only {len(df)} stocks, regenerating...")
-        else:
-            logging.info("Annual returns not found in Redis or invalid, calculating...")
-        
-        # Regenerate data using real Yahoo Finance
+
+        # Return cached data if valid (100+ stocks)
+        if not df.empty and len(df) >= 100:
+            logging.info(f"Retrieved annual returns from Redis cache ({len(df)} stocks)")
+            return df
+
+        # Build from stock_data written by stocknity-market-data service
+        logging.info("Annual returns cache empty — building from stock_data:S&P 500:Any")
         from services.data_fetcher import fetch_stock_data_sync
-        
         result = fetch_stock_data_sync('S&P 500', 'Any')
-        if result.success and not result.data.empty:
-            df1 = result.data
-            logging.info(f"DF1: {df1.head()}")
-            
-            # Check if Ticker column exists
-            if 'Ticker' in df1.columns:
-                ticker_lists = df1['Ticker'].tolist()
-                logging.info(f"Ticker List length: {len(ticker_lists)}")
-            else:
-                logging.error("No Ticker column found in data")
-                return self._generate_fallback_data([])
-        else:
-            logging.error(f"Failed to fetch data: {result.error}")
-            return self._generate_fallback_data([])
-        
-        # Use real Yahoo Finance data instead of mock data
-        logging.info("Fetching real annual returns data from Yahoo Finance...")
-        
-        try:
-            # Process tickers in chunks to avoid overwhelming the API
-            chunk_size = 50  # Yahoo Finance can handle larger chunks
-            all_results = []
-            
-            for i in range(0, len(ticker_lists), chunk_size):
-                chunk = ticker_lists[i:i + chunk_size]
-                logging.info(f"Processing chunk {i//chunk_size + 1}: tickers {i+1}-{min(i+chunk_size, len(ticker_lists))}")
-                
-                try:
-                    # Use the new synchronous function directly
-                    result_df = self.get_annual_return(chunk)
-                    
-                    if not result_df.empty:
-                        all_results.append(result_df)
-                    
-                    # Add small delay to be respectful to Yahoo Finance API
-                    import time
-                    time.sleep(0.5)
-                    
-                except Exception as e:
-                    logging.error(f"Error processing chunk {i//chunk_size + 1}: {e}")
-                    continue
-            
-            if all_results:
-                df = pd.concat(all_results, axis=0, ignore_index=True)
-                logging.info(f"Successfully fetched data for {len(df)} stocks from Yahoo Finance")
-                
-                # Save to Redis manager with longer TTL (48 hours instead of 24)
-                redis_manager.save_annual_returns(df)
-                return df
-            else:
-                logging.error("No data could be fetched from Yahoo Finance")
-                return self._generate_fallback_data(ticker_lists)
-                
-        except Exception as e:
-            logging.error(f"Error fetching from Yahoo Finance: {e}")
-            logging.info("Falling back to mock data generation...")
-            return self._generate_fallback_data(ticker_lists)
+        if result.success and not result.data.empty and 'Ticker' in result.data.columns:
+            stock_df = result.data
+            annual_ret = stock_df.get('annual_return', pd.Series(0, index=stock_df.index))
+            annual_ret = pd.to_numeric(annual_ret, errors='coerce').fillna(0)
+            risk = 0.30  # default annualized volatility estimate
+            ret_df = pd.DataFrame({
+                'Ticker': stock_df['Ticker'],
+                'expected_annual_return': annual_ret,
+                'expected_annual_risk': risk,
+                'return_risk_ratio': annual_ret / risk,
+            })
+            redis_manager.save_annual_returns(ret_df)
+            logging.info(f"Built annual returns from stock_data ({len(ret_df)} stocks)")
+            return ret_df
+
+        logging.warning("No stock_data available for annual returns — market-data service may not have run yet")
+        return pd.DataFrame()
     
     def _generate_fallback_data(self, ticker_lists):
         """Generate fallback mock data when Yahoo Finance fails"""

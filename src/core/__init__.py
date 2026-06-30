@@ -1,81 +1,63 @@
 from flask import Flask, request, jsonify
-from flask_login import LoginManager, login_required, current_user
 from flask_cors import CORS
 import os
 import secrets
-from datetime import datetime, timedelta
 from functools import wraps
 import logging
 
-login_manager = LoginManager()
+# Paths exempt from the internal-secret gate (health check + root probe).
+_PUBLIC_PATHS = {'/api/health', '/'}
 
-def api_login_required(f):
-    """Custom decorator for API endpoints that returns JSON instead of redirecting"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        try:
-            if not current_user.is_authenticated:
-                return jsonify({
-                    'success': False,
-                    'error': 'Authentication required',
-                    'code': 'AUTH_REQUIRED'
-                }), 401
-            return f(*args, **kwargs)
-        except Exception as e:
-            logging.error(f"Authentication error in {f.__name__}: {e}")
-            return jsonify({
-                'success': False,
-                'error': 'Authentication error',
-                'code': 'AUTH_ERROR'
-            }), 401
-    return decorated_function
 
 def create_app():
     app = Flask(__name__)
-    
+
     # Security Configuration
     configure_security(app)
-    
+
     # Configuration
     app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY')
     if not app.config['SECRET_KEY']:
         # Generate a secure key if not provided
         app.config['SECRET_KEY'] = secrets.token_hex(32)
         logging.warning("SECRET_KEY not set - generated temporary key. Set SECRET_KEY environment variable for production.")
-    
-    # Vercel-specific session configuration
-    if os.environ.get('VERCEL') == '1':
-        app.config['SESSION_TYPE'] = 'filesystem'
-        app.config['SESSION_FILE_DIR'] = '/tmp'
-        app.config['SESSION_FILE_THRESHOLD'] = 500
-        logging.info("Configured for Vercel serverless environment")
-    
+
     app.config['REDIS_HOST'] = os.environ.get('REDIS_HOST', 'localhost')
     app.config['REDIS_PORT'] = int(os.environ.get('REDIS_PORT', 6379))
     app.config['REDIS_DB'] = int(os.getenv('REDIS_DB', 0))
-    
-    # Initialize extensions
-    login_manager.init_app(app)
-    login_manager.login_view = 'auth.login'
-    login_manager.login_message = 'Please log in to access this page.'
-    login_manager.login_message_category = 'info'
-    
-    @login_manager.user_loader
-    def load_user(user_id):
-        from utilities.model import User
-        return User.get(user_id)
-    
+
     # Security middleware
     setup_security_middleware(app)
 
-    # Internal secret — reject requests not from Spring Boot
+    # Internal secret — this is the SOLE access control. Flask must only be
+    # reachable via the Spring gateway, which injects X-Internal-Secret on
+    # every proxied request. There is no Flask-side user auth anymore.
     internal_secret = os.environ.get('INTERNAL_SECRET')
+    is_production = os.environ.get('FLASK_ENV') == 'production'
+
+    if not internal_secret:
+        if is_production:
+            # Fail fast: a production deployment without a shared secret would
+            # be open to the world. The gateway must set INTERNAL_SECRET.
+            raise RuntimeError(
+                "INTERNAL_SECRET is unset in production. Flask is only reachable "
+                "via the Spring gateway and must require X-Internal-Secret. "
+                "Set INTERNAL_SECRET to the same value the gateway injects."
+            )
+        logging.warning(
+            "INTERNAL_SECRET is unset — internal-secret gate is DISABLED. "
+            "This is acceptable for local development only. In production this "
+            "would raise a RuntimeError."
+        )
 
     @app.before_request
     def require_internal_secret():
-        if request.path == '/api/health' or request.path == '/':
+        if request.path in _PUBLIC_PATHS:
             return None
-        if internal_secret and request.headers.get('X-Internal-Secret') != internal_secret:
+        if not internal_secret:
+            # Non-production with no secret configured: allow through (dev only).
+            return None
+        if request.headers.get('X-Internal-Secret') != internal_secret:
             return jsonify({'error': 'Forbidden'}), 403
 
     # Import and register blueprints
@@ -84,27 +66,16 @@ def create_app():
 
     from src.api.main import main
     app.register_blueprint(main)
-    
-    # Note: Async scheduler is started via API endpoints
-    # Use /api/scheduler/start to start the background scheduler
-    # Old scheduler has been replaced with async_scheduler
-    
+
     return app
 
 def configure_security(app):
-    """Configure security settings"""
-    # Production security settings
-    if os.environ.get('FLASK_ENV') == 'production':
-        app.config['SESSION_COOKIE_SECURE'] = True
-        app.config['SESSION_COOKIE_HTTPONLY'] = True
-        app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-        app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)
-        # Vercel-specific session settings
-        app.config['SESSION_COOKIE_DOMAIN'] = None  # Allow all domains
-        app.config['SESSION_COOKIE_PATH'] = '/'
-        # Use a more permissive SameSite for Vercel
-        app.config['SESSION_COOKIE_SAMESITE'] = 'None'
-    
+    """Configure security settings.
+
+    There are no server-side sessions: auth was retired and access control is
+    handled solely by the X-Internal-Secret gate. Only response security
+    headers are configured here.
+    """
     # Security headers
     if os.environ.get('ENABLE_SECURITY_HEADERS', 'true').lower() == 'true':
         @app.after_request

@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
 Stocknity - Advanced Stock Portfolio Management System
+
+This Flask service is read-only analytics. It does NOT refresh, write, or
+delete cache. The stocknity-market-data service (ScreenerDataAggregator)
+owns population of the canonical stock_data:* Redis keys.
 """
 
 import os

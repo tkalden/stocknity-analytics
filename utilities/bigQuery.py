@@ -44,25 +44,11 @@ def get_portfolios_by_user_id(user_id):
         return pd.DataFrame(all_records)
     return pd.DataFrame()
 
-def get_user_by_id_and_pw(user_id, password):
-    """Authenticate user with Redis"""
-    user = redis_manager.authenticate_user(user_id, password)
-    if user:
-        return pd.DataFrame([user])
-    return pd.DataFrame()
-
 def get_subscription_by_id(email):
     """Get subscription by email from Redis"""
     subscription = redis_manager.get_subscription_by_email(email)
     if subscription:
         return pd.DataFrame([subscription])
-    return pd.DataFrame()
-
-def get_user_by_id(email):
-    """Get user by email from Redis"""
-    user = redis_manager.get_user_by_email(email)
-    if user:
-        return pd.DataFrame([user])
     return pd.DataFrame()
 
 def get_portfolio_by_id(portfolio_id):
