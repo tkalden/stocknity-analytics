@@ -526,6 +526,60 @@ class RedisDataManager:
             logging.error(f"Error clearing expired data: {e}")
             return 0
 
+    def get_fundamentals_by_sector(self, sector: str) -> list:
+        """Get all TickerFundamentals from Redis (written by Spring Boot batch) for a sector."""
+        if not self.available:
+            return []
+        try:
+            keys = self.r.keys("fundamentals:*")
+            result = []
+            for key in (keys or []):
+                data = self.r.get(key)
+                if not data:
+                    continue
+                tf = json.loads(data)
+                if sector == 'Any' or tf.get('sector') == sector:
+                    result.append(tf)
+            return result
+        except Exception as e:
+            logging.error(f"Error fetching fundamentals for sector {sector}: {e}")
+            return []
+
+    def save_screener_data(self, df, cache_key):
+        """Save screener data to Redis with 2h TTL."""
+        try:
+            data_json = df.to_json(orient='records')
+            self.r.setex(cache_key, 2 * 60 * 60, data_json)
+            logging.debug(f"Saved screener data to Redis: {cache_key}")
+            return True
+        except Exception as e:
+            logging.error(f"Error saving screener data to Redis: {e}")
+            return False
+
+    def get_screener_data(self, cache_key):
+        """Get screener data from Redis."""
+        try:
+            data_json = self.r.get(cache_key)
+            if data_json:
+                df = pd.read_json(data_json, orient='records')
+                logging.debug(f"Retrieved screener data from Redis: {cache_key}")
+                return df
+            return pd.DataFrame()
+        except Exception as e:
+            logging.error(f"Error retrieving screener data from Redis: {e}")
+            return pd.DataFrame()
+
+    def clear_screener_cache(self, prefix='screener_data'):
+        """Clear all screener_data:* keys."""
+        try:
+            pattern = f"{prefix}:*"
+            keys = self.r.keys(pattern)
+            if keys:
+                self.r.delete(*keys)
+                logging.info(f"Cleared {len(keys)} screener data cache entries")
+        except Exception as e:
+            logging.error(f"Error clearing screener cache: {e}")
+
     def save_strength_data(self, df, cache_key):
         """Save strength data to Redis"""
         try:
